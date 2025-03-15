@@ -45,7 +45,7 @@ extern YYSTYPE cool_yylval;
 %}
 
 %x comment
-int line_num = 1;
+%x string
 
 /*
  * Define names for regular expressions here.
@@ -64,7 +64,7 @@ LOOP            ?:loop
 POOL            ?:pool
 THEN            ?:then
 WHILE           ?:while
-ASSIGN          ?:assign
+ASSIGN          <-
 CASE            ?:case
 ESAC            ?:esac
 OF              ?:of
@@ -74,7 +74,6 @@ NOT             ?:not
 ISVOID          ?:isvoid
 STR_CONST       ?:str_const
 INT_CONST       ?:int_const
-ERROR           ?:error
 
 TRUE            t(?:rue)
 FALSE           f(?:alse)
@@ -100,18 +99,25 @@ RIGHTPAREN      \)
 AT              @
 LEFTBRACE       \{
 RIGHTBRACE      \}
-
-STRING          "[\\n|\\f|\\b|\\t|~[\n\f\b\t\0]]*"
-SPACE           [ \n\f\b\t\r\v]+
+NEWLINE         \n
+SPACE           [ \f\b\t\r\v]+
 COMMENT         --.*--
+UMMATCHEDCOMMENTEND \*\)
 %%
 
  /*
   *  Nested comments, need to choose between comment and the mul, comment can have apostrophe, cannot end a file without closing the comment.
   */
+"(*"                 BEGIN(comment);
+<comment>[^*\n]*
+<comment>"*"+[^*)\n]*
+<comment>\n         ++curr_lineno;
+<comment>"*"+")"    BEGIN(INITIAL);
+<comment><<EOF>>    cool_yylval.error_msg = "EOF in comment"; BEGIN(INITIAL); return (ERROR);
 
-
-
+ /*
+  *  <comment><<EOF>>    cool_yylval.error_msg = "EOF in comment"; return (ERROR);
+  */
 
  /*
   *  The multiple-character operators.
@@ -123,6 +129,7 @@ COMMENT         --.*--
   * which must begin with a lower-case letter.
   */
 
+{UMMATCHEDCOMMENTEND} {cool_yylval.error_msg = "Unmatched *)"; return (ERROR);}
 {CLASS}           {return (CLASS);}
 {ELSE}            {return (ELSE);}
 {FI}              {return (FI);}
@@ -149,7 +156,6 @@ COMMENT         --.*--
 {SELF}            {cool_yylval.symbol = idtable.add_string(yytext); return (OBJECTID);}
 {SELF_TYPE}       {cool_yylval.symbol = idtable.add_string(yytext); return (TYPEID);}
 {OBJECTID}        {cool_yylval.symbol = idtable.add_string(yytext); return (OBJECTID);}
-
 {ADD}             {return (43);}
 {DIVIDE}          {return (47);}
 {SUBTRACT}         {return (45);}
@@ -166,15 +172,11 @@ COMMENT         --.*--
 {AT}               {return (64);}
 {LEFTBRACE}        {return (123);}
 {RIGHTBRACE}       {return (125);}
+{NEWLINE}           {++curr_lineno;}
 {SPACE}            /*eat */
-{STRING}           {cool_yylval.symbol = stringtable.add_string(yytext); return (STR_CONST);}
 {COMMENT}          /*eat */
+<<EOF>>             {return (0);}
 
-"*"                 BEGIN(comment);
-<comment>[^*\n]*
-<comment>"*"+[^*/\n]*
-<comment>\n         ++line_num;
-<comment>"*"+"/"    BEGIN(INITIAL);
 
  /*
   *  String constants (C syntax)
@@ -182,6 +184,41 @@ COMMENT         --.*--
   *  \n \t \b \f, the result is c.
   *
   */
+
+\"                              {string_buf_ptr = string_buf; BEGIN(string);}
+<string>\"                      {cool_yylval.symbol = stringtable.add_string(string_buf); BEGIN(INITIAL); return (STR_CONST);}
+<string>\n|\t|\r|\b|\f          {cool_yylval.error_msg = "Unterminated String Constant"; return (ERROR);}
+
+<string>\\n                    {*string_buf_ptr++ = '\n';}
+<string>\\r         {*string_buf_ptr++ = '\r';}
+<string>\\t        {*string_buf_ptr++ = '\t';}
+<string>\\b        {*string_buf_ptr++ = '\b';}
+<string>\\f         {*string_buf_ptr++ = '\f';}
+<string>\0          {cool_yylval.error_msg = "String contains null character"; BEGIN(INITIAL); return (ERROR);
+                                }
+<string>[^\\n\"] {
+    char* yyt = yytext;
+     /*
+        * Preventing too long string
+         */
+
+    while (*yyt) {
+        *string_buf_ptr++ = *yyt++;
+    };
+    if (strlen(string_buf_ptr) == MAX_STR_CONST){
+        cool_yylval.error_msg = "String constant too long";
+        BEGIN(INITIAL);
+        return (ERROR);
+    }
+    /*
+    * check the length of string, check if null, keep lexing until next unescaped new line or " seen.,
+     */
+}
+<string><<EOF>>    {cool_yylval.error_msg = "EOF in string constant"; cool_yylval.symbol = stringtable.add_string(string_buf); BEGIN(INITIAL); return (ERROR); }
+
+.       {cool_yylval.error_msg = yytext; return (ERROR);}
+
+
 
 
 %%
